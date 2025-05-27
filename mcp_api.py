@@ -4,10 +4,19 @@ import mysql.connector
 import os
 from dotenv import load_dotenv
 import random
+from fastapi.middleware.cors import CORSMiddleware
 
 load_dotenv()
 
 app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # or restrict to just ["http://your-openwebui-ip"]
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # DB config
 DB_HOST = os.getenv('DB_HOST', 'localhost')
@@ -19,11 +28,11 @@ DB_NAME = os.getenv('DB_NAME', 'playtonight')
 class ChatRequest(BaseModel):
     messages: list
 
-@app.post("/v1/chat/completions")
-async def chat_with_mcp(request: ChatRequest):
-    query = request.messages[-1]['content'].lower()
+@app.post("/recommend")
+async def recommend_game(request: Request):
+    data = await request.json()
+    query = data.get("query", "").lower()
 
-    # Connect to DB
     conn = mysql.connector.connect(
         host=DB_HOST,
         user=DB_USER,
@@ -36,31 +45,28 @@ async def chat_with_mcp(request: ChatRequest):
         cursor.execute("SELECT * FROM games ORDER BY RAND() LIMIT 1")
     else:
         like = f"%{query}%"
-        cursor.execute("SELECT * FROM games WHERE name LIKE %s OR tags LIKE %s OR genres LIKE %s ORDER BY RAND() LIMIT 1", (like, like, like))
+        cursor.execute(
+            "SELECT * FROM games WHERE name LIKE %s OR tags LIKE %s OR genres LIKE %s ORDER BY RAND() LIMIT 1",
+            (like, like, like)
+        )
 
     result = cursor.fetchone()
     cursor.close()
     conn.close()
 
     if result:
-        content = f"🎮 Try **{result['name']}**!\nGenres: {result['genres']}\nTags: {result['tags']}"
-    else:
-        content = "Aww, I couldn’t find anything that matches that vibe, nya~ 🥺"
-
-    return {
-        "id": "chatcmpl-playtonight-001",
-        "object": "chat.completion",
-        "choices": [{
-            "index": 0,
-            "message": {
-                "role": "assistant",
-                "content": content
-            },
-            "finish_reason": "stop"
-        }],
-        "usage": {
-            "prompt_tokens": 0,
-            "completion_tokens": 0,
-            "total_tokens": 0
+        return {
+            "name": result["name"],
+            "genres": result["genres"],
+            "tags": result["tags"]
         }
-    }
+    else:
+        return {
+            "name": None,
+            "genres": None,
+            "tags": None
+        }
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("mcp_api:app", host="0.0.0.0", port=8000, reload=True)
