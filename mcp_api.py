@@ -36,27 +36,6 @@ class ChatRequest(BaseModel):
 class RecommendRequest(BaseModel):
     query: Optional[str] = "random"
 
-def build_filters_from_query(query: str):
-    filters = []
-    params = []
-
-    if "short" in query or "finish in a night" in query:
-        filters.append("tags LIKE %s")
-        params.append("%short%")
-
-    if "co-op" in query or "coop" in query:
-        filters.append("tags LIKE %s")
-        params.append("%co-op%")
-
-    if "not multiplayer" in query or "singleplayer only" in query:
-        filters.append("tags NOT LIKE %s")
-        params.append("%multiplayer%")
-
-    if "rpg" in query:
-        filters.append("genres LIKE %s")
-        params.append("%rpg%")
-
-    return filters, params
 
 @app.post("/recommend")
 async def recommend_game(body: Optional[RecommendRequest] = None):
@@ -70,16 +49,28 @@ async def recommend_game(body: Optional[RecommendRequest] = None):
     )
     cursor = conn.cursor(dictionary=True)
 
-    filters, params = build_filters_from_query(query)
-
-    if filters:
-        where_clause = " AND ".join(filters)
-        sql = f"SELECT * FROM games WHERE {where_clause} ORDER BY RAND() LIMIT 1"
-        cursor.execute(sql, params)
+    if query and query != "random":
+        like = f"%{query}%"
+        cursor.execute(
+            "SELECT * FROM games WHERE name LIKE %s OR tags LIKE %s OR genres LIKE %s ORDER BY RAND() LIMIT 1",
+            (like, like, like)
+        )
     else:
         cursor.execute("SELECT * FROM games ORDER BY RAND() LIMIT 1")
 
     result = cursor.fetchone()
+    attempts = 0
+    while result and not result["tags"] and not result["genres"] and attempts < 5:
+        print(f"⚠️ Skipping app {result['name']} due to missing metadata...")
+        if query and query != "random":
+            cursor.execute(
+                "SELECT * FROM games WHERE name LIKE %s OR tags LIKE %s OR genres LIKE %s ORDER BY RAND() LIMIT 1",
+                (like, like, like)
+            )
+        else:
+            cursor.execute("SELECT * FROM games ORDER BY RAND() LIMIT 1")
+        result = cursor.fetchone()
+        attempts += 1
     cursor.close()
     conn.close()
 
