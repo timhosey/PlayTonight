@@ -1,0 +1,33 @@
+openapi: 3.0.0
+info:
+  title: PlayTonight Game Recommender
+  version: 1.0.0
+servers:
+  - url: http://192.168.0.72:8000
+paths:
+  /recommend:
+    post:
+      summary: Recommend a game based on user input
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                query:
+                  type: string
+      responses:
+        '200':
+          description: A recommended game
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  name:
+                    type: string
+                  genres:
+                    type: string
+                  tags:
+                    type: string
