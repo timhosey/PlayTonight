@@ -14,6 +14,23 @@ DB_HOST = os.getenv('DB_HOST', 'localhost')
 DB_USER = os.getenv('DB_USER', 'root')
 DB_PASS = os.getenv('DB_PASS', '')
 DB_NAME = os.getenv('DB_NAME', 'playtonight')
+
+def get_game_details_from_steamspy(app_id):
+    try:
+        url = f"https://steamspy.com/api.php?request=appdetails&appid={app_id}"
+        response = requests.get(url, timeout=10)
+        print(f"🔎 SteamSpy status for {app_id}: {response.status_code}")
+        if response.status_code != 200:
+            return None
+        data = response.json()
+        tags = list(data.get("tags", {}).keys())
+        genres = data.get("genre", "").split(", ") if data.get("genre") else []
+        print(f"✅ SteamSpy returned {len(tags)} tags and {len(genres)} genres for {app_id}")
+        return {"tags": tags, "genres": genres}
+    except Exception as e:
+        print(f"💥 SteamSpy failed for {app_id}: {e}")
+        return None
+
 def save_game_to_db(app_id, name, tags, genres):
     conn = mysql.connector.connect(
         host=DB_HOST,
@@ -36,6 +53,34 @@ def save_game_to_db(app_id, name, tags, genres):
         cursor.close()
         conn.close()
 
+def get_game_details(app_id):
+    print(f"🔍 Getting game details for app {app_id}...")
+
+    steamspy_data = get_game_details_from_steamspy(app_id)
+    if steamspy_data and (steamspy_data["tags"] or steamspy_data["genres"]):
+        return steamspy_data
+
+    print(f"🔁 Falling back to Steam page scrape for app {app_id}")
+    url = f"https://store.steampowered.com/app/{app_id}/"
+    headers = {'User-Agent': 'Mozilla/5.0'}
+
+    try:
+        response = requests.get(url, headers=headers, timeout=10)
+        print(f"📥 Status for {app_id}: {response.status_code}")
+        if response.status_code != 200:
+            print(f"⚠️ Failed to fetch {app_id} - status {response.status_code}")
+            return {"tags": [], "genres": []}
+
+        soup = BeautifulSoup(response.text, 'html.parser')
+        tags = [tag.text.strip() for tag in soup.select('.glance_tags.popular_tags a')]
+        genres = [g.text.strip() for g in soup.select('div.details_block a[href*="genre"]')]
+
+        print(f"✅ Steam scrape found {len(tags)} tags and {len(genres)} genres for {app_id}")
+        return {"tags": tags, "genres": genres}
+    except Exception as e:
+        print(f"💥 Error scraping {app_id}: {e}")
+        return {"tags": [], "genres": []}
+
 def get_owned_games(api_key, steam_id):
     url = "http://api.steampowered.com/IPlayerService/GetOwnedGames/v0001/"
     params = {
@@ -49,23 +94,6 @@ def get_owned_games(api_key, steam_id):
     response = requests.get(url, params=params)
     response.raise_for_status()
     return response.json()['response'].get('games', [])
-
-def get_game_details(app_id):
-    url = f"https://store.steampowered.com/app/{app_id}/"
-    headers = {'User-Agent': 'Mozilla/5.0'}
-    print(f"🔍 Scraping tags/genres for app {app_id}...")
-    try:
-        page = requests.get(url, headers=headers, timeout=10)
-        page.raise_for_status()
-        soup = BeautifulSoup(page.text, 'html.parser')
-
-        tags = [tag.text.strip() for tag in soup.select('.glance_tags.popular_tags a')]
-        genres = [genre.text.strip() for genre in soup.select('div.details_block a[href*="genre"]')]
-
-        return {'tags': tags, 'genres': genres}
-    except Exception as e:
-        print(f"⚠️ Error fetching {app_id}: {e}")
-        return {'tags': [], 'genres': []}
 
 def get_existing_app_ids():
     conn = mysql.connector.connect(
@@ -98,7 +126,7 @@ def main():
         save_game_to_db(app_id, name, details['tags'], details['genres'])
         print(f"✅ Saved {name} ({app_id}) to DB")
         print()
-        time.sleep(2)  # Respect Steam servers 💖
+        time.sleep(2)  # Respect SteamSpy servers 💖
 
 if __name__ == '__main__':
     main()
