@@ -4,3 +4,4 @@ dotenv
 mysql-connector-python
 fastapi
 uvicorn
+fuzzywuzzy
