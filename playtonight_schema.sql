@@ -8,5 +8,6 @@ CREATE TABLE IF NOT EXISTS games (
     name VARCHAR(255),
     tags TEXT,
     genres TEXT,
+    playtime_forever INT DEFAULT 0,
     last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 );
