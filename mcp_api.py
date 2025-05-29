@@ -70,6 +70,8 @@ class ChatRequest(BaseModel):
 class RecommendRequest(BaseModel):
     query: Optional[str] = "random"
     limit: Optional[int] = 1
+    min_playtime: Optional[int] = None
+    max_playtime: Optional[int] = None
 
 class RefineRequest(BaseModel):
     text: str
@@ -77,7 +79,7 @@ class RefineRequest(BaseModel):
 class RefinedQuery(BaseModel):
     query: str
 
-@app.post("/refine", response_model=RefinedQuery)
+@app.post("/refine")
 async def refine_query(body: RefineRequest):
     text = body.text.lower()
     all_keywords = list(cached_tags.union(cached_genres))
@@ -85,7 +87,41 @@ async def refine_query(body: RefineRequest):
     keywords = [match for match, score in best_matches if score > 80]
 
     print(f"🛠️ Refine request: text='{text}' → tags={keywords}")
-    return {"query": " ".join(keywords) if keywords else "random"}
+
+    conn = mysql.connector.connect(
+        host=DB_HOST,
+        user=DB_USER,
+        password=DB_PASS,
+        database=DB_NAME
+    )
+    cursor = conn.cursor(dictionary=True)
+
+    if keywords:
+        placeholders = ' OR '.join(["tags LIKE %s OR genres LIKE %s"] * len(keywords))
+        values = []
+        for keyword in keywords:
+            kw = f"%{keyword}%"
+            values.extend([kw, kw])
+        sql = f"SELECT * FROM games WHERE ({placeholders}) AND tags != '' AND genres != '' ORDER BY RAND() LIMIT 5"
+        cursor.execute(sql, values)
+        games = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        return {"results": games, "query": " ".join(keywords)}
+    else:
+        fallback_keywords = process.extract(text, all_keywords, limit=5)
+        fallback_suggestions = [match for match, score in fallback_keywords if score > 60]
+        print(f"⚠️ No strong match. Suggestions: {fallback_suggestions}")
+        cursor.execute("SELECT * FROM games WHERE tags != '' AND genres != '' ORDER BY RAND() LIMIT 5")
+        games = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        return {
+            "results": games,
+            "query": "random",
+            "fallback_suggestions": fallback_suggestions,
+            "note": "No confident tag/genre match found. Using fallback options for consideration."
+        }
 
 
 @app.post("/recommend")
@@ -102,15 +138,30 @@ async def recommend_game(body: Optional[RecommendRequest] = None):
     )
     cursor = conn.cursor(dictionary=True)
 
+    playtime_conditions = []
+    params = []
+
     if query and query != "random":
         like = f"%{query}%"
-        cursor.execute(
-            f"SELECT * FROM games WHERE (name LIKE %s OR tags LIKE %s OR genres LIKE %s) AND tags != '' AND genres != '' ORDER BY RAND() LIMIT {limit}",
-            (like, like, like)
-        )
+        base_sql = "SELECT * FROM games WHERE (name LIKE %s OR tags LIKE %s OR genres LIKE %s)"
+        params.extend([like, like, like])
     else:
-        cursor.execute(f"SELECT * FROM games WHERE tags != '' AND genres != '' ORDER BY RAND() LIMIT {limit}")
+        base_sql = "SELECT * FROM games WHERE 1=1"
 
+    if body and body.min_playtime is not None:
+        playtime_conditions.append("playtime_forever >= %s")
+        params.append(body.min_playtime)
+    if body and body.max_playtime is not None:
+        playtime_conditions.append("playtime_forever <= %s")
+        params.append(body.max_playtime)
+
+    playtime_sql = " AND ".join(playtime_conditions)
+    final_sql = f"{base_sql} AND tags != '' AND genres != ''"
+    if playtime_sql:
+        final_sql += f" AND {playtime_sql}"
+    final_sql += f" ORDER BY RAND() LIMIT {limit}"
+
+    cursor.execute(final_sql, params)
     results = cursor.fetchall()
     cursor.close()
     conn.close()
@@ -121,7 +172,9 @@ async def recommend_game(body: Optional[RecommendRequest] = None):
         "tags": row["tags"],
         "debug": {
             "query": query,
-            "limit": limit
+            "limit": limit,
+            "min_playtime": body.min_playtime if body else None,
+            "max_playtime": body.max_playtime if body else None
         }
     } for row in results]
 
