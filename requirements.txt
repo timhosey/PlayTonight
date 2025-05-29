@@ -5,3 +5,5 @@ mysql-connector-python
 fastapi
 uvicorn
 fuzzywuzzy
+howlongtobeatpy
+levenshtein
