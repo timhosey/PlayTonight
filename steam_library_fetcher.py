@@ -4,6 +4,7 @@ import requests
 import time
 from bs4 import BeautifulSoup
 import mysql.connector
+from howlongtobeatpy import HowLongToBeat
 
 load_dotenv()
 
@@ -31,7 +32,7 @@ def get_game_details_from_steamspy(app_id):
         print(f"💥 SteamSpy failed for {app_id}: {e}")
         return None
 
-def save_game_to_db(app_id, name, tags, genres):
+def save_game_to_db(app_id, name, tags, genres, playtime_minutes=0):
     conn = mysql.connector.connect(
         host=DB_HOST,
         user=DB_USER,
@@ -41,13 +42,14 @@ def save_game_to_db(app_id, name, tags, genres):
     cursor = conn.cursor()
     try:
         cursor.execute("""
-            INSERT INTO games (app_id, name, tags, genres)
-            VALUES (%s, %s, %s, %s)
+            INSERT INTO games (app_id, name, tags, genres, playtime_forever)
+            VALUES (%s, %s, %s, %s, %s)
             ON DUPLICATE KEY UPDATE
                 name=VALUES(name),
                 tags=VALUES(tags),
-                genres=VALUES(genres)
-        """, (app_id, name, ','.join(tags), ','.join(genres)))
+                genres=VALUES(genres),
+                playtime_forever=VALUES(playtime_forever)
+        """, (app_id, name, ','.join(tags), ','.join(genres), playtime_minutes))
         conn.commit()
     finally:
         cursor.close()
@@ -103,28 +105,53 @@ def get_existing_app_ids():
         database=DB_NAME
     )
     cursor = conn.cursor()
-    cursor.execute("SELECT app_id FROM games")
+    cursor.execute("SELECT app_id, playtime_forever, tags, genres FROM games")
     rows = cursor.fetchall()
     cursor.close()
     conn.close()
-    return set(row[0] for row in rows)
+    return {row[0]: (row[1], row[2], row[3]) for row in rows}
+
+def get_estimated_playtime_minutes(game_name):
+    try:
+        results = HowLongToBeat().search(game_name)
+        if results:
+            game = results[0]
+            if game.main_story:
+                return int(float(game.main_story) * 60)
+    except Exception as e:
+        print(f"💥 HLTB failed for {game_name}: {e}")
+    return 0
 
 def main():
     games = get_owned_games(STEAM_API_KEY, STEAM_ID)
     print(f"🎮 You own {len(games)} games!\n")
 
-    existing_ids = get_existing_app_ids()
-    print(f"📁 Skipping {len(existing_ids)} already in DB")
+    existing_games = get_existing_app_ids()
+    completed = sum(1 for v in existing_games.values() if v[0] > 0)
+    incomplete = sum(1 for v in existing_games.values() if v[0] == 0)
+    print(f"📁 Skipping {completed} games already in DB with playtime, {incomplete} have no recorded playtime")
 
     for game in games:
         app_id = game['appid']
-        if app_id in existing_ids:
-            continue  # Skip if already in DB
-
         name = game.get('name', 'Unknown')
+
+        if app_id in existing_games:
+            playtime, tags, genres = existing_games[app_id]
+            if playtime > 0:
+                continue  # Skip fully populated entries
+            if tags and genres:
+                estimated_time = get_estimated_playtime_minutes(name)
+                estimated_time_hours = round(estimated_time / 60, 1)
+                save_game_to_db(app_id, name, tags.split(','), genres.split(','), estimated_time)
+                print(f"🕒 Updated playtime for {name} ({app_id}) only ({estimated_time} min ≈ {estimated_time_hours} hrs)")
+                print()
+                continue
+
         details = get_game_details(app_id)
-        save_game_to_db(app_id, name, details['tags'], details['genres'])
-        print(f"✅ Saved {name} ({app_id}) to DB")
+        estimated_time = get_estimated_playtime_minutes(name)
+        estimated_time_hours = round(estimated_time / 60, 1)
+        save_game_to_db(app_id, name, details['tags'], details['genres'], estimated_time)
+        print(f"✅ Saved {name} ({app_id}) to DB ({estimated_time} min ≈ {estimated_time_hours} hrs)")
         print()
         time.sleep(2)  # Respect SteamSpy servers 💖
 
