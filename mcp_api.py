@@ -105,15 +105,29 @@ async def refine_query(body: RefineRequest):
         sql = f"SELECT * FROM games WHERE ({placeholders}) AND tags != '' AND genres != '' ORDER BY RAND() LIMIT 5"
         cursor.execute(sql, values)
         games = cursor.fetchall()
+        # Update session_memory with keywords
+        if keywords:
+            if "user_preferences" not in session_memory:
+                session_memory["user_preferences"] = []
+            session_memory["user_preferences"].extend([kw for kw in keywords if kw not in session_memory["user_preferences"]])
         cursor.close()
         conn.close()
-        return {"results": games, "query": " ".join(keywords)}
+        return {
+            "results": games,
+            "query": " ".join(keywords),
+            "used_keywords": keywords
+        }
     else:
         fallback_keywords = process.extract(text, all_keywords, limit=5)
         fallback_suggestions = [match for match, score in fallback_keywords if score > 60]
         print(f"⚠️ No strong match. Suggestions: {fallback_suggestions}")
         cursor.execute("SELECT * FROM games WHERE tags != '' AND genres != '' ORDER BY RAND() LIMIT 5")
         games = cursor.fetchall()
+        # Update session_memory with fallback_suggestions
+        if fallback_suggestions:
+            if "user_preferences" not in session_memory:
+                session_memory["user_preferences"] = []
+            session_memory["user_preferences"].extend([fs for fs in fallback_suggestions if fs not in session_memory["user_preferences"]])
         cursor.close()
         conn.close()
         return {
@@ -159,12 +173,24 @@ async def recommend_game(body: Optional[RecommendRequest] = None):
     final_sql = f"{base_sql} AND tags != '' AND genres != ''"
     if playtime_sql:
         final_sql += f" AND {playtime_sql}"
-    final_sql += f" ORDER BY RAND() LIMIT {limit}"
+    final_sql += " ORDER BY RAND() LIMIT 100"
 
     cursor.execute(final_sql, params)
-    results = cursor.fetchall()
+    all_results = cursor.fetchall()
     cursor.close()
     conn.close()
+
+    # Score each game by number of matching user preference tags/genres
+    preferences = set(session_memory.get("user_preferences", []))
+    scored = []
+    for row in all_results:
+        row_tags = set(tag.strip().lower() for tag in row["tags"].split(",") if tag)
+        row_genres = set(genre.strip().lower() for genre in row["genres"].split(",") if genre)
+        score = len(preferences & (row_tags | row_genres))
+        scored.append((score, row))
+
+    # Sort by score descending, fallback to original order if tied
+    sorted_results = [row for score, row in sorted(scored, key=lambda x: (-x[0], random.random()))]
 
     return [{
         "name": row["name"],
@@ -174,9 +200,10 @@ async def recommend_game(body: Optional[RecommendRequest] = None):
             "query": query,
             "limit": limit,
             "min_playtime": body.min_playtime if body else None,
-            "max_playtime": body.max_playtime if body else None
+            "max_playtime": body.max_playtime if body else None,
+            "score": score
         }
-    } for row in results]
+    } for row, score in zip(sorted_results[:limit], [s for s, _ in sorted(scored, key=lambda x: (-x[0], random.random()))])]
 
 @app.get("/context")
 async def get_context(limit: int = 5):
@@ -199,14 +226,27 @@ async def get_context(limit: int = 5):
         "note": "Use this context to inform your game recommendation decisions."
     }
 
+
+# In-memory session memory storage
+session_memory = {
+    "user_preferences": [],
+    "recent_queries": []
+}
+
 @app.get("/session_memory")
 async def get_session_memory():
-    print("🧠 Returning placeholder session memory")
-    return {
-        "user_preferences": [],
-        "recent_queries": [],
-        "note": "Session memory is currently stubbed. Extend this to persist preferences or history."
-    }
+    print("🧠 Returning current session memory")
+    return session_memory
+
+@app.post("/session_memory/update")
+async def update_session_memory(update: dict):
+    print(f"📝 Updating session memory with: {update}")
+    for key in update:
+        if key in session_memory and isinstance(session_memory[key], list):
+            session_memory[key].append(update[key])
+        else:
+            session_memory[key] = update[key]
+    return {"status": "updated", "memory": session_memory}
 
 if __name__ == "__main__":
     import uvicorn
